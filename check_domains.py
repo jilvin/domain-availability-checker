@@ -5,6 +5,7 @@ import socket
 import urllib.request
 import urllib.error
 from typing import Tuple
+from datetime import datetime
 
 # Set a timeout for socket connections
 socket.setdefaulttimeout(3.0)
@@ -99,24 +100,71 @@ def process_domains(input_file: str, output_file: str, delay: float = 1.5):
         print("No valid domains found to process.")
         sys.exit(0)
 
-    print(f"Loaded {len(domains)} valid domains. Starting DNS pre-filtering...")
+    # Load existing results if they exist
+    existing = {}
+    try:
+        with open(output_file, 'r', encoding='utf-8') as csvfile:
+            reader = csv.DictReader(csvfile)
+            for row in reader:
+                domain = row.get("Domain", "").strip().lower()
+                if domain:
+                    status = row.get("Status", "")
+                    details = row.get("Details", "")
+                    last_checked = row.get("LastChecked", "")
+                    existing[domain] = (status, details, last_checked)
+    except FileNotFoundError:
+        pass
+    except Exception as e:
+        print(f"Warning: Could not read existing output file '{output_file}': {e}")
+
+    now = datetime.now()
+    results = {}
+    to_check = []
+
+    for domain in domains:
+        if domain in existing:
+            status, detail, last_checked = existing[domain]
+            days_old = 9999
+            if last_checked:
+                try:
+                    dt = datetime.strptime(last_checked, "%Y-%m-%d %H:%M:%S")
+                    days_old = (now - dt).days
+                except ValueError:
+                    try:
+                        dt = datetime.fromisoformat(last_checked)
+                        days_old = (now - dt).days
+                    except ValueError:
+                        pass
+            
+            if days_old < 30:
+                print(f"Skipping {domain} (cached result is {days_old} days old: {status} - {detail})")
+                results[domain] = (status, detail, last_checked)
+                continue
+        
+        to_check.append(domain)
+
+    if not to_check:
+        print("All domains have recent cached results. No checks needed.")
+    else:
+        print(f"Loaded {len(domains)} domains. Checking {len(to_check)} domains (skipping {len(domains) - len(to_check)} cached domains).")
 
     # Step 1: DNS Pre-filtering
     candidates = []
-    results = []  # List of tuples: (domain, status, details)
 
-    for domain in domains:
-        print(f"Checking DNS for {domain}... ", end="", flush=True)
-        if resolve_dns(domain):
-            print("RESOLVED (Registered)")
-            results.append((domain, "Registered", "Registered (Active DNS)"))
-        else:
-            print("NXDOMAIN (Candidate)")
-            candidates.append(domain)
+    if to_check:
+        print("Starting DNS pre-filtering...")
+        for domain in to_check:
+            print(f"Checking DNS for {domain}... ", end="", flush=True)
+            if resolve_dns(domain):
+                print("RESOLVED (Registered)")
+                results[domain] = ("Registered", "Registered (Active DNS)", now.strftime("%Y-%m-%d %H:%M:%S"))
+            else:
+                print("NXDOMAIN (Candidate)")
+                candidates.append(domain)
 
-    print(f"\nDNS pre-filtering complete.")
-    print(f"Registered (Active DNS): {len(results)}")
-    print(f"Candidates for RDAP lookup: {len(candidates)}")
+        print(f"\nDNS pre-filtering complete.")
+        print(f"Registered (Active DNS): {len(to_check) - len(candidates)}")
+        print(f"Candidates for RDAP lookup: {len(candidates)}")
 
     if candidates:
         print(f"\nStarting RDAP lookups for {len(candidates)} candidates with a {delay}s delay to prevent rate limits...")
@@ -125,7 +173,7 @@ def process_domains(input_file: str, output_file: str, delay: float = 1.5):
             print(f"[{idx}/{len(candidates)}] Querying RDAP for {domain}... ", end="", flush=True)
             status, detail = check_rdap(domain)
             print(f"{status.upper()} ({detail})")
-            results.append((domain, status, detail))
+            results[domain] = (status, detail, now.strftime("%Y-%m-%d %H:%M:%S"))
             
             # Wait to respect registry rate limits
             if idx < len(candidates):
@@ -135,9 +183,10 @@ def process_domains(input_file: str, output_file: str, delay: float = 1.5):
     try:
         with open(output_file, 'w', newline='', encoding='utf-8') as csvfile:
             writer = csv.writer(csvfile)
-            writer.writerow(["Domain", "Status", "Details"])
-            for domain, status, detail in results:
-                writer.writerow([domain, status, detail])
+            writer.writerow(["Domain", "Status", "Details", "LastChecked"])
+            for domain in domains:
+                status, detail, last_checked = results[domain]
+                writer.writerow([domain, status, detail, last_checked])
         print(f"\nSuccess! Results written to: {output_file}")
     except Exception as e:
         print(f"\nError writing to output file '{output_file}': {e}")
