@@ -415,6 +415,5 @@ __marimo__/
 # Local run outputs & test data
 domains.txt
 results.csv
-*.csv
 screened.txt
 
