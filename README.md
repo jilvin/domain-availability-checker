@@ -12,7 +12,7 @@ Unlike traditional checkers that scrape websites or require developer registrati
 - **RDAP Verification:** Queries the Registration Data Access Protocol (RDAP) API for candidate domains (lacking DNS records) to verify availability.
 - **Auto-Tuning Dynamic Rate Limiter:** Built-in feedback loop that detects registry rate limits (HTTP 429), dynamically scales the launch delay, and sleeps all threads during the cooldown.
 - **Jitter-Proof Launch Spacing:** Guarantees sequential, thread-safe spacing between requests and retries to prevent concurrent spikes from triggering server blocks.
-- **Smart Resume Caching:** Reads `results.csv` on startup. Skips completed results, but automatically queues previous failures (`Rate Limited`, `Error`, `Unknown`) directly back to the RDAP check, bypassing redundant DNS resolution.
+- **Smart Resume Caching:** Reads the output file or an optional cache CSV (`-c` / `--cache`) on startup. Skips completed results, but automatically queues previous failures (`Rate Limited`, `Error`, `Unknown`) directly back to the RDAP check, bypassing redundant DNS resolution. The cache parser supports standard datetimes as well as Excel serial dates.
 - **Live Thread-Safe Writing:** Appends results to the CSV file one by one using a thread lock to prevent data loss if the run is interrupted.
 - **Real-Time Progress & ETA:** Displays log indices, lookup statuses, and a dynamically calculated human-readable Estimated Time to Completion (ETA).
 
@@ -56,9 +56,10 @@ python check_domains.py <input_file> <output_file> [delay] [options]
 | :--- | :--- | :--- | :--- |
 | `input_file` | Positional | Path to the text file listing domains to check (one per line). | *(Required)* |
 | `output_file` | Positional | Path to the CSV file where results will be saved. | *(Required)* |
-| `delay` | Positional (Optional) | Base launch delay spacing (in seconds) between RDAP requests. | `1.5` |
+| `delay` | Positional (Optional) | Base launch delay spacing (in seconds) between RDAP requests. | `1.2` |
 | `-t, --threads` | Flag (Optional) | Number of concurrent worker threads for DNS and RDAP querying. | `20` |
 | `-r, --retries` | Flag (Optional) | Maximum retries allowed for rate-limited requests before marking as `Rate Limited`. | `3` |
+| `-c, --cache` | Flag (Optional) | Path to an optional cache CSV file to skip already checked domains. | *None* |
 
 ---
 

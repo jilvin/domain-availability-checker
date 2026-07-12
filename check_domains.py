@@ -142,7 +142,27 @@ def check_rdap(domain: str, max_retries: int = 3, rate_limit_state: dict = None)
         
         return "Unknown", "Could not determine status"
 
-def process_domains(input_file: str, output_file: str, delay: float = 1.5, retries: int = 3, threads: int = 20, cooldown_period: float = 30.0):
+def parse_date(date_str: str) -> datetime:
+    formats = [
+        "%Y-%m-%d %H:%M:%S",
+        "%d,%m,%Y %H:%M",
+        "%d/%m/%Y %H:%M",
+        "%Y/%m/%d %H:%M:%S",
+        "%d-%m-%Y %H:%M:%S",
+        "%d/%m/%Y %H:%M:%S",
+        "%Y-%m-%d"
+    ]
+    for fmt in formats:
+        try:
+            return datetime.strptime(date_str.strip().strip('"'), fmt)
+        except ValueError:
+            continue
+    try:
+        return datetime.fromisoformat(date_str.strip().strip('"'))
+    except ValueError:
+        return None
+
+def process_domains(input_file: str, output_file: str, cache_file: str = None, delay: float = 1.2, retries: int = 3, threads: int = 20, cooldown_period: float = 30.0):
     # Read domains from file
     try:
         with open(input_file, 'r', encoding='utf-8') as f:
@@ -169,20 +189,38 @@ def process_domains(input_file: str, output_file: str, delay: float = 1.5, retri
 
     # Load existing results if they exist
     existing = {}
-    try:
-        with open(output_file, 'r', encoding='utf-8') as csvfile:
-            reader = csv.DictReader(csvfile)
-            for row in reader:
-                domain = row.get("Domain", "").strip().lower()
-                if domain:
-                    status = row.get("Status", "")
-                    details = row.get("Details", "")
-                    last_checked = row.get("LastChecked", "")
-                    existing[domain] = (status, details, last_checked)
-    except FileNotFoundError:
-        pass
-    except Exception as e:
-        print(f"Warning: Could not read existing output file '{output_file}': {e}")
+    if cache_file:
+        try:
+            with open(cache_file, 'r', encoding='utf-8') as csvfile:
+                reader = csv.DictReader(csvfile)
+                for row in reader:
+                    domain = row.get("Domain", "").strip().lower()
+                    if domain:
+                        status = row.get("Status", "")
+                        details = row.get("Details", "")
+                        last_checked = row.get("LastChecked", "")
+                        existing[domain] = (status, details, last_checked)
+        except FileNotFoundError:
+            pass
+        except Exception as e:
+            print(f"Warning: Could not read cache file '{cache_file}': {e}")
+
+    if output_file:
+        try:
+            with open(output_file, 'r', encoding='utf-8') as csvfile:
+                reader = csv.DictReader(csvfile)
+                for row in reader:
+                    domain = row.get("Domain", "").strip().lower()
+                    if domain:
+                        status = row.get("Status", "")
+                        details = row.get("Details", "")
+                        last_checked = row.get("LastChecked", "")
+                        if status not in ("Unchecked", "Not checked yet", "") or domain not in existing:
+                            existing[domain] = (status, details, last_checked)
+        except FileNotFoundError:
+            pass
+        except Exception as e:
+            print(f"Warning: Could not read existing output file '{output_file}': {e}")
 
     now = datetime.now()
     results = {}
@@ -199,15 +237,9 @@ def process_domains(input_file: str, output_file: str, delay: float = 1.5, retri
 
             days_old = 9999
             if last_checked:
-                try:
-                    dt = datetime.strptime(last_checked, "%Y-%m-%d %H:%M:%S")
+                dt = parse_date(last_checked)
+                if dt:
                     days_old = (now - dt).days
-                except ValueError:
-                    try:
-                        dt = datetime.fromisoformat(last_checked)
-                        days_old = (now - dt).days
-                    except ValueError:
-                        pass
             
             if days_old < 30:
                 print(f"Skipping {domain} (cached result is {days_old} days old: {status} - {detail})")
@@ -323,15 +355,16 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Bulk Domain Availability Checker")
     parser.add_argument("input_file", help="Input text file containing domains")
     parser.add_argument("output_file", help="Output CSV file for results")
-    parser.add_argument("delay", type=float, nargs="?", default=1.5, help="Delay between RDAP queries in seconds")
+    parser.add_argument("delay", type=float, nargs="?", default=1.2, help="Delay between RDAP queries in seconds")
     parser.add_argument("-r", "--retries", type=int, default=3, help="RDAP rate limit retries count")
     parser.add_argument("-t", "--threads", type=int, default=20, help="Number of concurrent threads")
+    parser.add_argument("-c", "--cache", help="Optional cache CSV file to skip already checked domains")
     
     args = parser.parse_args()
     
     if args.delay < 0:
-        print("Delay cannot be negative. Defaulting to 1.5 seconds.", file=sys.stderr)
-        args.delay = 1.5
+        print("Delay cannot be negative. Defaulting to 1.2 seconds.", file=sys.stderr)
+        args.delay = 1.2
         
     if args.retries < 0:
         print("Retries cannot be negative. Defaulting to 3.", file=sys.stderr)
@@ -344,6 +377,7 @@ if __name__ == "__main__":
     process_domains(
         input_file=args.input_file,
         output_file=args.output_file,
+        cache_file=args.cache,
         delay=args.delay,
         retries=args.retries,
         threads=args.threads
