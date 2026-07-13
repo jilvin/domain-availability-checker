@@ -1,4 +1,5 @@
 import csv
+import os
 import sys
 import time
 import socket
@@ -143,6 +144,10 @@ def check_rdap(domain: str, max_retries: int = 3, rate_limit_state: dict = None)
         return "Unknown", "Could not determine status"
 
 def parse_date(date_str: str) -> datetime:
+    """
+    Parses a date string from various common formats (including ISO and standard CSV formats).
+    Returns a datetime object if successful, or None if parsing fails.
+    """
     formats = [
         "%Y-%m-%d %H:%M:%S",
         "%d,%m,%Y %H:%M",
@@ -163,6 +168,18 @@ def parse_date(date_str: str) -> datetime:
         return None
 
 def process_domains(input_file: str, output_file: str, cache_file: str = None, delay: float = 1.2, retries: int = 3, threads: int = 20, cooldown_period: float = 30.0):
+    """
+    Processes a list of domains from input_file, checking their availability.
+    
+    The process consists of:
+      1. Loading any existing results from cache_file and output_file.
+      2. Skipping domains that have recent cached results (less than 30 days old).
+      3. Performing concurrent DNS pre-filtering on the remaining domains.
+      4. Querying the public RDAP bootstrap server concurrently for domains that fail DNS resolution.
+      5. Enforcing launch delay and dynamic rate-limiting retry/backoff for RDAP requests.
+      6. Writing progress and final results to output_file thread-safely, ensuring progress is
+         preserved even if the script is interrupted.
+    """
     # Read domains from file
     try:
         with open(input_file, 'r', encoding='utf-8') as f:
@@ -327,27 +344,32 @@ def process_domains(input_file: str, output_file: str, cache_file: str = None, d
                     minutes = int((seconds % 3600) // 60)
                     return f"{hours}h {minutes}m"
 
-            def check_rdap_worker(args_tuple):
-                idx, domain = args_tuple
-                
+            completed_lock = threading.Lock()
+            completed_count = 0
+
+            def check_rdap_worker(domain):
+                nonlocal completed_count
                 status, detail = check_rdap(domain, max_retries=retries, rate_limit_state=rate_limit_state)
+                
+                with completed_lock:
+                    completed_count += 1
+                    current_completed = completed_count
                 
                 # Calculate ETA based on elapsed time and candidates remaining
                 elapsed = time.time() - rdap_start_time
-                avg_time = elapsed / idx
-                remaining = len(candidates) - idx
+                avg_time = elapsed / current_completed
+                remaining = len(candidates) - current_completed
                 eta_str = format_eta(avg_time * remaining) if remaining > 0 else "0s"
                 
-                print(f"[{idx}/{len(candidates)}] Querying RDAP for {domain}... {status.upper()} ({detail}) [ETA: {eta_str}]", flush=True)
+                print(f"[{current_completed}/{len(candidates)}] Querying RDAP for {domain}... {status.upper()} ({detail}) [ETA: {eta_str}]", flush=True)
                 
                 results[domain] = (status, detail, now.strftime("%Y-%m-%d %H:%M:%S"))
                 
                 # Save progress progressively to prevent loss if terminated
                 save_results(quiet=True)
 
-            args_list = [(idx, domain) for idx, domain in enumerate(candidates, start=1)]
             with ThreadPoolExecutor(max_workers=threads) as executor:
-                list(executor.map(check_rdap_worker, args_list))
+                list(executor.map(check_rdap_worker, candidates))
     finally:
         save_results()
 

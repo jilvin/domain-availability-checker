@@ -108,5 +108,17 @@ The output CSV file contains the following columns:
 | Column | Description |
 | :--- | :--- |
 | **Domain** | The domain name checked. |
-| **Status** | `Available`, `Registered`, `Rate Limited`, or `Error`. |
+| **Status** | `Available`, `Registered`, `Rate Limited`, `Error`, or `Unknown`. |
 | **Details** | Additional context (e.g., `Registered (Active DNS)`, `Unregistered (404 Not Found)`). |
+| **LastChecked** | Date and time the domain status was verified. |
+
+## Running Tests
+
+This project includes a test suite under `test_check_domains.py` using Python's standard `unittest` library. It covers domain validation, cache loading and skip behavior, resumption logic, and mock DNS/RDAP resolution.
+
+To run all tests:
+
+```bash
+python -m unittest test_check_domains.py
+```
+
