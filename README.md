@@ -57,7 +57,7 @@ python check_domains.py <input_file> <output_file> [delay] [options]
 | `input_file` | Positional | Path to the text file listing domains to check (one per line). | *(Required)* |
 | `output_file` | Positional | Path to the CSV file where results will be saved. | *(Required)* |
 | `delay` | Positional (Optional) | Base launch delay spacing (in seconds) between RDAP requests. | `1.2` |
-| `-t, --threads` | Flag (Optional) | Number of concurrent worker threads for DNS and RDAP querying. | `20` |
+| `-t, --threads` | Flag (Optional) | Number of concurrent worker threads. *Note: Using > 2 threads prints a warning since overlapping concurrent requests can trigger 403 Forbidden blocks on rdap.org.* | `20` |
 | `-r, --retries` | Flag (Optional) | Maximum retries allowed for rate-limited requests before marking as `Rate Limited`. | `3` |
 | `-c, --cache` | Flag (Optional) | Path to an optional cache CSV file to skip already checked domains. | *None* |
 
@@ -65,41 +65,38 @@ python check_domains.py <input_file> <output_file> [delay] [options]
 
 ### Usage Examples
 
-#### 1. Basic Bulk Check (Safe Defaults)
-Checks the list using a safe `1.5s` delay and 20 worker threads:
+#### 1. Basic Bulk Check (Safe and Recommended)
+Checks the list using a safe `1.5s` delay and limits the worker threads to `2` to avoid concurrent connection blocks:
 ```bash
-python check_domains.py domains.txt results.csv
+python check_domains.py domains.txt results.csv 1.5 --threads 2
 ```
 
-#### 2. Optimized Speed Check (Recommended)
-Launches the checker with a fine-tuned `1.15s` delay which is the minimum stable delay that stays safe under Cloudflare limits:
+#### 2. Optimized Speed Check
+Launches the checker with a fine-tuned `1.15s` delay using `2` threads:
 ```bash
-python check_domains.py domains.txt results.csv 1.15
+python check_domains.py domains.txt results.csv 1.15 --threads 2
 ```
 
-#### 3. Low-Concurrency Check
-Runs with a safer `2.0s` delay and limits the worker thread pool count to `5`:
+#### 3. Single-Threaded Sequential Check
+Ensures absolute zero overlapping connection concurrency (safest method for long runs):
 ```bash
-python check_domains.py domains.txt results.csv 2.0 --threads 5
+python check_domains.py domains.txt results.csv 1.2 --threads 1
 ```
 
 #### 4. Resilient Check (High Retries)
-Runs at optimal speed but allows rate-limited queries to retry up to `5` times (spacing each retry by 30 seconds of cooldown) before declaring failure:
+Allows rate-limited requests (HTTP 429) to retry up to `5` times:
 ```bash
-python check_domains.py domains.txt results.csv 1.15 --threads 20 --retries 5
+python check_domains.py domains.txt results.csv 1.15 --threads 2 --retries 5
 ```
 
-### Rate Limits & Recommended Delay
-The public RDAP bootstrap service is protected by Cloudflare, which enforces a strict rate limit of **10 requests in 10 seconds** (effectively **1 request per second**). 
+### Rate Limits & HTTP 403 Forbidden Blocks
+The public RDAP bootstrap service is protected by Cloudflare, which enforces rate limits on both request frequency and connection concurrency.
 
-To maximize speed while staying completely rate-limit-free from the start, **it is highly recommended to start with a delay of `1.15` seconds and use multithreading**:
-
-```bash
-python check_domains.py domains.txt results.csv 1.15 --threads 20
-```
-
-* **Why 1.15s is the stable minimum**: Although the limit is 10 requests/10s, running 20 concurrent threads creates small CPU/GIL and network latency variations (jitter). Any starting delay lower than `1.15s` will eventually bunch requests together close enough to group 11 requests in 10 seconds, triggering a rate limit block. A starting delay of `1.15s` absorbs this jitter completely.
-* **Dynamic Cooldown & Scaling**: If you start with a faster delay, the script's built-in feedback loop will automatically scale up the query delay by `0.1s` per rate-limit incident and pause all threads for 30 seconds before resuming.
+* **Rate Limit (HTTP 429)**: Limit is roughly **10 requests in 10 seconds** per IP. If triggered, the script automatically scales query delays up by `0.1s` and sleeps all threads during a 30-second cooldown.
+* **Abuse / Concurrency Block (HTTP 403)**: Triggered when too many concurrent requests are sent simultaneously from the same IP (which happens when `--threads` is set > 2).
+  * **Immediate Termination**: If a 403 is detected, the script saves all current results and exits immediately with status `1`, since waiting or retrying will not resolve the block.
+  * **Ban Lifespan**: Ban durations are managed by Cloudflare/rdap.org. For standard residential or commercial IPs, bans typically last **1 to 24 hours**. For datacenter, VPN, or cloud provider IP ranges, the ban may be **permanent**.
+  * **Prevention**: Always use `--threads 2` or `--threads 1` to ensure requests are sequential and do not overlap. If you get blocked, wait 24 hours or run the script using a different IP address (e.g., via a VPN or proxy).
 
 ## Output Format
 
