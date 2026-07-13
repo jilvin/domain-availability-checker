@@ -57,7 +57,7 @@ python check_domains.py <input_file> <output_file> [delay] [options]
 | `input_file` | Positional | Path to the text file listing domains to check (one per line). | *(Required)* |
 | `output_file` | Positional | Path to the CSV file where results will be saved. | *(Required)* |
 | `delay` | Positional (Optional) | Base launch delay spacing (in seconds) between RDAP requests. | `1.2` |
-| `-t, --threads` | Flag (Optional) | Number of concurrent worker threads. *Note: Using > 2 threads prints a warning since overlapping concurrent requests can trigger 403 Forbidden blocks on rdap.org.* | `20` |
+| `-t, --threads` | Flag (Optional) | Number of concurrent worker threads. *Note: Using > 2 threads prints a warning since overlapping concurrent requests can trigger 403 Forbidden blocks on rdap.org.* | `1` |
 | `-r, --retries` | Flag (Optional) | Maximum retries allowed for rate-limited requests before marking as `Rate Limited`. | `3` |
 | `-c, --cache` | Flag (Optional) | Path to an optional cache CSV file to skip already checked domains. | *None* |
 

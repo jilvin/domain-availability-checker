@@ -174,7 +174,7 @@ def parse_date(date_str: str) -> datetime:
     except ValueError:
         return None
 
-def process_domains(input_file: str, output_file: str, cache_file: str = None, delay: float = 1.2, retries: int = 3, threads: int = 20, cooldown_period: float = 30.0):
+def process_domains(input_file: str, output_file: str, cache_file: str = None, delay: float = 1.2, retries: int = 3, threads: int = 1, cooldown_period: float = 30.0):
     """
     Processes a list of domains from input_file, checking their availability.
     
@@ -389,7 +389,7 @@ if __name__ == "__main__":
     parser.add_argument("output_file", help="Output CSV file for results")
     parser.add_argument("delay", type=float, nargs="?", default=1.2, help="Delay between RDAP queries in seconds")
     parser.add_argument("-r", "--retries", type=int, default=3, help="RDAP rate limit retries count")
-    parser.add_argument("-t", "--threads", type=int, default=20, help="Number of concurrent threads")
+    parser.add_argument("-t", "--threads", type=int, default=1, help="Number of concurrent threads")
     parser.add_argument("-c", "--cache", help="Optional cache CSV file to skip already checked domains")
     
     args = parser.parse_args()
@@ -403,8 +403,8 @@ if __name__ == "__main__":
         args.retries = 3
         
     if args.threads <= 0:
-        print("Threads must be a positive integer. Defaulting to 20.", file=sys.stderr)
-        args.threads = 20
+        print("Threads must be a positive integer. Defaulting to 1.", file=sys.stderr)
+        args.threads = 1
 
     if args.threads > 2:
         print(
