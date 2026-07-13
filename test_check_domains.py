@@ -336,5 +336,61 @@ class TestDomainChecker(unittest.TestCase):
         )
         self.assertNotIn("\033[91mWarning:", result_ok.stderr)
 
+    @patch("check_domains.time")
+    @patch("check_domains.urllib.request.urlopen")
+    def test_rate_limiter_does_not_hold_lock_while_sleeping(self, mock_urlopen, mock_time):
+        """Test that the rate limiter does not hold the lock while sleeping."""
+        import check_domains
+        import threading
+        
+        lock_was_held_during_sleep = []
+        rate_limit_lock = threading.Lock()
+        
+        class MockClock:
+            def __init__(self):
+                self.time_val = 100.0
+            def time(self):
+                return self.time_val
+            def sleep(self, seconds):
+                if rate_limit_lock.locked():
+                    lock_was_held_during_sleep.append(True)
+                else:
+                    lock_was_held_during_sleep.append(False)
+                self.time_val += seconds
+                
+        clock = MockClock()
+        mock_time.time.side_effect = clock.time
+        mock_time.sleep.side_effect = clock.sleep
+        
+        # Mock urlopen to return a mock response
+        mock_response = MagicMock()
+        mock_response.status = 200
+        mock_urlopen.return_value.__enter__.return_value = mock_response
+        
+        rate_limit_state = {
+            "delay": 1.0,
+            "next_request_time": 0.0,
+            "last_rate_limit_time": 0.0,
+            "cooldown_period": 30.0,
+            "rate_limit_lock": rate_limit_lock
+        }
+        
+        # First query (t=100.0) -> next_request_time becomes 101.0
+        check_domains.check_rdap("d1.com", max_retries=1, rate_limit_state=rate_limit_state)
+        # Second query (t=100.0) -> next_request_time becomes 102.0, sleeps 1.0s, t becomes 101.0
+        check_domains.check_rdap("d2.com", max_retries=1, rate_limit_state=rate_limit_state)
+        
+        # Now trigger a cooldown sleep
+        rate_limit_state["last_rate_limit_time"] = 101.0
+        # Third query (t=101.0) -> next_request_time becomes 102.0. But wait!
+        # When checking cooldown at t=101.0, cooldown_remaining = 30 - (101.0 - 101.0) = 30.0s.
+        # So it sleeps for 30.0s (t becomes 131.0).
+        # On loop back (t=131.0), cooldown has expired. It reserves slot at t=131.0, next_request_time becomes 132.0.
+        check_domains.check_rdap("d3.com", max_retries=1, rate_limit_state=rate_limit_state)
+        
+        # Verify that sleeps occurred and lock was never held during sleeps
+        self.assertTrue(len(lock_was_held_during_sleep) > 0)
+        self.assertNotIn(True, lock_was_held_during_sleep)
+
 if __name__ == "__main__":
     unittest.main()

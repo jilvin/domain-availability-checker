@@ -67,36 +67,37 @@ def check_rdap(domain: str, max_retries: int = 3, rate_limit_state: dict = None)
     
     while True:
         if rate_limit_state is not None:
-            cooldown_period = rate_limit_state.get("cooldown_period", 30.0)
             while True:
-                # 1. Check and sleep for cooldown outside the lock
                 with rate_limit_state["rate_limit_lock"]:
-                    now_time = time.time()
-                    cooldown_remaining = cooldown_period - (now_time - rate_limit_state.get("last_rate_limit_time", 0.0))
-                
-                if cooldown_remaining > 0:
-                    time.sleep(cooldown_remaining)
-                    continue
-                
-                # 2. Try to acquire launch slot
-                with rate_limit_state["rate_limit_lock"]:
-                    now_time = time.time()
-                    # Double-check if cooldown was updated while waiting for the lock
-                    cooldown_remaining = cooldown_period - (now_time - rate_limit_state.get("last_rate_limit_time", 0.0))
-                    if cooldown_remaining > 0:
-                        # A cooldown was triggered, release lock and loop back to sleep
-                        continue
+                    now = time.time()
                     
-                    # No cooldown, enforce normal request launch spacing
-                    elapsed = now_time - rate_limit_state["last_request_time"]
-                    current_delay = rate_limit_state["delay"]
-                    if elapsed < current_delay:
-                        sleep_time = current_delay - elapsed
-                        time.sleep(sleep_time)
-                        rate_limit_state["last_request_time"] = time.time()
+                    # 1. Check if we are currently in cooldown
+                    last_rl = rate_limit_state.get("last_rate_limit_time", 0.0)
+                    cooldown_period = rate_limit_state.get("cooldown_period", 30.0)
+                    cooldown_remaining = cooldown_period - (now - last_rl)
+                    
+                    if cooldown_remaining > 0:
+                        sleep_time = cooldown_remaining
+                        is_cooldown_sleep = True
                     else:
-                        rate_limit_state["last_request_time"] = now_time
-                    break
+                        # No cooldown active, reserve a launch slot
+                        launch_time = max(now, rate_limit_state.get("next_request_time", 0.0))
+                        rate_limit_state["next_request_time"] = launch_time + rate_limit_state["delay"]
+                        sleep_time = launch_time - now
+                        is_cooldown_sleep = False
+                
+                # Sleep outside the lock to prevent blocking other threads
+                if sleep_time > 0:
+                    time.sleep(sleep_time)
+                
+                if not is_cooldown_sleep:
+                    # We slept for our launch slot. Check if a cooldown was triggered while we slept.
+                    with rate_limit_state["rate_limit_lock"]:
+                        now = time.time()
+                        last_rl = rate_limit_state.get("last_rate_limit_time", 0.0)
+                        cooldown_remaining = cooldown_period - (now - last_rl)
+                        if cooldown_remaining <= 0:
+                            break  # Exit rate limit wait loop and proceed to request
 
         if rate_limit_state is not None and tld:
             with rate_limit_state["rate_limit_lock"]:
@@ -377,7 +378,7 @@ def process_domains(input_file: str, output_file: str, cache_file: str = None, d
         if candidates:
             rate_limit_state = {
                 "delay": delay,
-                "last_request_time": 0.0,
+                "next_request_time": 0.0,
                 "last_rate_limit_time": 0.0,
                 "cooldown_period": cooldown_period,
                 "rate_limit_lock": threading.Lock()
