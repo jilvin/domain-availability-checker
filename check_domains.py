@@ -8,7 +8,7 @@ import urllib.error
 from urllib.parse import urlparse
 import argparse
 import threading
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Tuple
 from datetime import datetime
 
@@ -307,9 +307,16 @@ def process_domains(input_file: str, output_file: str, cache_file: str = None, d
         print(f"Loaded {len(domains)} domains. Checking {len(to_check)} domains (skipping {len(domains) - len(to_check)} cached domains).")
 
     csv_write_lock = threading.Lock()
+    last_write_time = 0.0
+    write_interval = 5.0  # Limit writes to once every 5 seconds unless forced
 
-    def save_results(quiet=False):
+    def save_results(quiet=False, force=False):
+        nonlocal last_write_time
         with csv_write_lock:
+            now_time = time.time()
+            if not force and (now_time - last_write_time) < write_interval:
+                return
+            last_write_time = now_time
             try:
                 with open(output_file, 'w', newline='', encoding='utf-8') as csvfile:
                     writer = csv.writer(csvfile)
@@ -336,11 +343,18 @@ def process_domains(input_file: str, output_file: str, cache_file: str = None, d
             dns_resolved_count = 0
             
             def check_dns_worker(domain):
-                resolved = resolve_dns(domain)
-                return domain, resolved
+                return resolve_dns(domain)
 
             with ThreadPoolExecutor(max_workers=threads) as executor:
-                for domain, resolved in executor.map(check_dns_worker, to_check):
+                futures = {executor.submit(check_dns_worker, domain): domain for domain in to_check}
+                for future in as_completed(futures):
+                    domain = futures[future]
+                    try:
+                        resolved = future.result()
+                    except Exception as e:
+                        print(f"Error checking DNS for {domain}: {e}", file=sys.stderr, flush=True)
+                        resolved = False
+
                     if resolved:
                         print(f"Checking DNS for {domain}... RESOLVED (Registered)", flush=True)
                         results[domain] = ("Registered", "Registered (Active DNS)", now.strftime("%Y-%m-%d %H:%M:%S"))
@@ -349,12 +363,16 @@ def process_domains(input_file: str, output_file: str, cache_file: str = None, d
                         print(f"Checking DNS for {domain}... NXDOMAIN (Candidate)", flush=True)
                         candidates.append(domain)
 
+            # Sort candidates according to their index in the original domains list to maintain structured output
+            domain_to_index = {domain: i for i, domain in enumerate(domains)}
+            candidates.sort(key=lambda d: domain_to_index.get(d, 999999))
+
             print(f"\nDNS pre-filtering complete.")
             print(f"Registered (Active DNS): {dns_resolved_count}")
             print(f"Candidates for RDAP lookup: {len(candidates)}")
             
             # Commit DNS checks to cache right away
-            save_results()
+            save_results(force=True)
 
         if candidates:
             rate_limit_state = {
@@ -406,12 +424,13 @@ def process_domains(input_file: str, output_file: str, cache_file: str = None, d
                 
                 if status == "Blocked":
                     if "registry" not in detail:
+                        save_results(quiet=True, force=True)
                         os._exit(1)
 
             with ThreadPoolExecutor(max_workers=threads) as executor:
                 list(executor.map(check_rdap_worker, candidates))
     finally:
-        save_results()
+        save_results(force=True)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Bulk Domain Availability Checker")

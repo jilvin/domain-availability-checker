@@ -214,6 +214,102 @@ class TestDomainChecker(unittest.TestCase):
         self.assertEqual(rows[0]["Status"], "Blocked")
         self.assertEqual(rows[0]["Details"], "Blocked (HTTP 403 Forbidden)")
 
+    @patch("check_domains.resolve_dns")
+    def test_dns_pre_filtering_as_completed_and_sorted(self, mock_resolve_dns):
+        """Test that DNS pre-filtering processes domains as_completed and sorts candidates to maintain domain.txt order."""
+        import check_domains
+
+        domains = ["second.com", "first.com", "third.com"]
+        with open(self.input_file, "w", encoding="utf-8") as f:
+            f.write("\n".join(domains) + "\n")
+
+        mock_resolve_dns.return_value = False
+
+        check_domains.process_domains(
+            input_file=self.input_file,
+            output_file=self.output_file,
+            cache_file=None,
+            delay=0.01,
+            threads=3
+        )
+
+        with open(self.output_file, "r", encoding="utf-8") as csvfile:
+            reader = csv.DictReader(csvfile)
+            rows = list(reader)
+        self.assertEqual(len(rows), 3)
+        self.assertEqual(rows[0]["Domain"], "second.com")
+        self.assertEqual(rows[1]["Domain"], "first.com")
+        self.assertEqual(rows[2]["Domain"], "third.com")
+
+    @patch("check_domains.resolve_dns")
+    @patch("check_domains.check_rdap")
+    @patch("check_domains.time.time")
+    def test_save_results_throttled(self, mock_time, mock_check_rdap, mock_resolve_dns):
+        """Test that save_results respects write_interval throttling."""
+        import check_domains
+        from unittest.mock import patch
+
+        class TimeStepper:
+            def __init__(self):
+                self.time_val = 100.0
+            def __call__(self, *args, **kwargs):
+                self.time_val += 0.001
+                return self.time_val
+
+        stepper = TimeStepper()
+        mock_time.side_effect = stepper
+
+        domains = ["d1.com", "d2.com", "d3.com"]
+        with open(self.input_file, "w", encoding="utf-8") as f:
+            f.write("\n".join(domains) + "\n")
+
+        mock_resolve_dns.return_value = False
+        mock_check_rdap.return_value = ("Available", "Unregistered (404 Not Found)")
+
+        original_check_rdap = check_domains.check_rdap
+        call_count = 0
+
+        def mock_check_rdap_wrapper(domain, *args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            res = original_check_rdap(domain, *args, **kwargs)
+            if call_count == 1:
+                # First check: advance time by 1s (so next check is throttled)
+                stepper.time_val += 1.0
+            elif call_count == 2:
+                # Second check: advance by 6s (so third check writes to disk)
+                stepper.time_val += 6.0
+            return res
+
+        import builtins
+        original_open = builtins.open
+        write_count = 0
+
+        def mock_open_wrapper(file, mode='r', *args, **kwargs):
+            nonlocal write_count
+            if file == self.output_file and 'w' in mode:
+                write_count += 1
+            return original_open(file, mode, *args, **kwargs)
+
+        with patch("check_domains.check_rdap", side_effect=mock_check_rdap_wrapper), \
+             patch("check_domains.open", side_effect=mock_open_wrapper, create=True):
+            check_domains.process_domains(
+                input_file=self.input_file,
+                output_file=self.output_file,
+                cache_file=None,
+                delay=0.01,
+                threads=1
+            )
+
+        # Expected writes:
+        # 1. DNS pre-filtering complete: save_results(force=True) -> write 1. last_write_time = 100.0.
+        # 2. Worker 1 (now = 101.0): elapsed = 1.0 < 5.0 -> throttled.
+        # 3. Worker 2 (now = 107.0): elapsed = 7.0 > 5.0 -> write 2. last_write_time = 107.0.
+        # 4. Worker 3 (now = 107.0): elapsed = 0.0 < 5.0 -> throttled.
+        # 5. finally block: save_results(force=True) -> write 3.
+        # Total writes to output file should be exactly 3.
+        self.assertEqual(write_count, 3)
+
     def test_cli_threads_warning(self):
         """Test that running the script with > 2 threads prints a red warning to stderr."""
         import subprocess

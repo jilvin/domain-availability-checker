@@ -95,6 +95,13 @@ Runs the checker with a 1.0s delay, 1 thread, and uses `checked_results/results_
 python check_domains.py domains.txt results.csv 1.0 -t 1 -c checked_results/results_1_checked.csv
 ```
 
+#### 6. Cached Multithreaded Check (20 threads, 1.2s delay)
+Runs the checker with a 1.2s delay, 20 threads, and uses `checked_results/results_1_checked.csv` as the cache:
+```bash
+python check_domains.py domains.txt results.csv 1.2 -t 20 -c checked_results/results_1_checked.csv
+```
+
+
 
 ### Rate Limits & HTTP 403 Forbidden Blocks
 The public RDAP bootstrap service is protected by Cloudflare, which enforces rate limits on both request frequency and connection concurrency.
