@@ -284,7 +284,7 @@ def process_domains(input_file: str, output_file: str, cache_file: str = None, d
     for domain in domains:
         if domain in existing:
             status, detail, last_checked = existing[domain]
-            if status in ("Unchecked", "Rate Limited", "Error", "Unknown"):
+            if status in ("Unchecked", "Rate Limited", "Error", "Unknown", "Blocked"):
                 # Already verified as NXDOMAIN (Candidate) in a previous run, skip DNS check and queue for retry
                 candidates.append(domain)
                 continue

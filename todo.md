@@ -28,3 +28,6 @@ This file tracks the enhancements planned for the bulk domain checking tool.
 - [x] **Output Enhancements**
   - Live thread-safe writing of results one-by-one.
   - Real-time progress and completion ETA.
+
+- [ ] **Optimize delay for Blocked requests**
+  - Skip or reclaim the query delay for domains/TLDs that are Blocked, as they do not consume rate limit capacity.

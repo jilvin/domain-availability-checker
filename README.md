@@ -12,7 +12,7 @@ Unlike traditional checkers that scrape websites or require developer registrati
 - **RDAP Verification:** Queries the Registration Data Access Protocol (RDAP) API for candidate domains (lacking DNS records) to verify availability.
 - **Auto-Tuning Dynamic Rate Limiter:** Built-in feedback loop that detects registry rate limits (HTTP 429), dynamically scales the launch delay, and sleeps all threads during the cooldown.
 - **Jitter-Proof Launch Spacing:** Guarantees sequential, thread-safe spacing between requests and retries to prevent concurrent spikes from triggering server blocks.
-- **Smart Resume Caching:** Reads the output file or an optional cache CSV (`-c` / `--cache`) on startup. Skips completed results, but automatically queues previous failures (`Rate Limited`, `Error`, `Unknown`) directly back to the RDAP check, bypassing redundant DNS resolution. The cache parser supports standard datetimes as well as Excel serial dates.
+- **Smart Resume Caching:** Reads the output file or an optional cache CSV (`-c` / `--cache`) on startup. Skips completed results, but automatically queues previous failures (`Rate Limited`, `Error`, `Unknown`, `Blocked`) directly back to the RDAP check, bypassing redundant DNS resolution.
 - **Live Thread-Safe Writing:** Appends results to the CSV file one by one using a thread lock to prevent data loss if the run is interrupted.
 - **Real-Time Progress & ETA:** Displays log indices, lookup statuses, and a dynamically calculated human-readable Estimated Time to Completion (ETA).
 
