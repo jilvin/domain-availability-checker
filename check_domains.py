@@ -406,6 +406,13 @@ if __name__ == "__main__":
         print("Threads must be a positive integer. Defaulting to 20.", file=sys.stderr)
         args.threads = 20
 
+    if args.threads > 2:
+        print(
+            "\033[91mWarning: Using more than 2 threads may lead to concurrent requests, which can trigger abuse blocks (403 Forbidden) on rdap.org.\033[0m",
+            file=sys.stderr,
+            flush=True
+        )
+
     process_domains(
         input_file=args.input_file,
         output_file=args.output_file,

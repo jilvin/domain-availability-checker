@@ -214,5 +214,31 @@ class TestDomainChecker(unittest.TestCase):
         self.assertEqual(rows[0]["Status"], "Blocked")
         self.assertEqual(rows[0]["Details"], "Blocked (HTTP 403 Forbidden)")
 
+    def test_cli_threads_warning(self):
+        """Test that running the script with > 2 threads prints a red warning to stderr."""
+        import subprocess
+        import sys
+        
+        with open(self.input_file, "w", encoding="utf-8") as f:
+            f.write("example.com\n")
+            
+        # Run with 3 threads. We expect the warning in stderr.
+        result = subprocess.run(
+            [sys.executable, "check_domains.py", self.input_file, self.output_file, "-t", "3"],
+            capture_output=True,
+            text=True
+        )
+        
+        # Check that stderr contains the red ANSI warning message
+        self.assertIn("\033[91mWarning:", result.stderr)
+        
+        # Run with 2 threads. We expect no such warning.
+        result_ok = subprocess.run(
+            [sys.executable, "check_domains.py", self.input_file, self.output_file, "-t", "2"],
+            capture_output=True,
+            text=True
+        )
+        self.assertNotIn("\033[91mWarning:", result_ok.stderr)
+
 if __name__ == "__main__":
     unittest.main()
