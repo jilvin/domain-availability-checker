@@ -5,6 +5,7 @@ import time
 import socket
 import urllib.request
 import urllib.error
+from urllib.parse import urlparse
 import argparse
 import threading
 from concurrent.futures import ThreadPoolExecutor
@@ -62,6 +63,7 @@ def check_rdap(domain: str, max_retries: int = 3, rate_limit_state: dict = None)
     
     retries = 0
     backoff = 2.0  # Initial backoff in seconds
+    tld = domain.strip().lower().split(".")[-1] if "." in domain else ""
     
     while True:
         if rate_limit_state is not None:
@@ -96,6 +98,11 @@ def check_rdap(domain: str, max_retries: int = 3, rate_limit_state: dict = None)
                         rate_limit_state["last_request_time"] = now_time
                     break
 
+        if rate_limit_state is not None and tld:
+            with rate_limit_state["rate_limit_lock"]:
+                if "blocked_tlds" in rate_limit_state and tld in rate_limit_state["blocked_tlds"]:
+                    return "Blocked", f"Blocked (TLD '{tld}' registry returned 403)"
+
         try:
             # We perform a GET request. A 200 OK means the domain is registered.
             with urllib.request.urlopen(req, timeout=5.0) as response:
@@ -105,12 +112,34 @@ def check_rdap(domain: str, max_retries: int = 3, rate_limit_state: dict = None)
             if e.code == 404:
                 return "Available", "Unregistered (404 Not Found)"
             elif e.code == 403:
-                print(
-                    f"HTTP Error 403: Forbidden checking '{domain}'. Blocked due to abuse or other misbehaviour. Exiting...",
-                    file=sys.stderr,
-                    flush=True
-                )
-                return "Blocked", "Blocked (HTTP 403 Forbidden)"
+                failed_url = getattr(e, "filename", "") or ""
+                parsed = urlparse(failed_url)
+                host = parsed.netloc if parsed.netloc else ""
+                
+                if host and "rdap.org" not in host:
+                    # It's a specific registry block, not rdap.org bootstrap!
+                    if rate_limit_state is not None:
+                        with rate_limit_state["rate_limit_lock"]:
+                            if "blocked_tlds" not in rate_limit_state:
+                                rate_limit_state["blocked_tlds"] = set()
+                            if tld:
+                                rate_limit_state["blocked_tlds"].add(tld)
+                    print(
+                        f"HTTP Error 403: Forbidden checking '{domain}' from registry '{host}'. "
+                        f"Skipping all future '{tld}' domains.",
+                        file=sys.stderr,
+                        flush=True
+                    )
+                    return "Blocked", f"Blocked (HTTP 403 Forbidden from registry '{host}')"
+                else:
+                    # It's a global block on the bootstrap server
+                    print(
+                        f"HTTP Error 403: Forbidden checking '{domain}' on rdap.org bootstrap server. "
+                        f"Blocked due to abuse or other misbehaviour. Exiting...",
+                        file=sys.stderr,
+                        flush=True
+                    )
+                    return "Blocked", "Blocked (HTTP 403 Forbidden)"
             elif e.code == 429:
                 if rate_limit_state is not None:
                     with rate_limit_state["rate_limit_lock"]:
@@ -376,7 +405,8 @@ def process_domains(input_file: str, output_file: str, cache_file: str = None, d
                 save_results(quiet=True)
                 
                 if status == "Blocked":
-                    os._exit(1)
+                    if "registry" not in detail:
+                        os._exit(1)
 
             with ThreadPoolExecutor(max_workers=threads) as executor:
                 list(executor.map(check_rdap_worker, candidates))

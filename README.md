@@ -89,6 +89,13 @@ Allows rate-limited requests (HTTP 429) to retry up to `5` times:
 python check_domains.py domains.txt results.csv 1.15 --threads 2 --retries 5
 ```
 
+#### 5. Cached Single-Threaded Check
+Runs the checker with a 1.0s delay, 1 thread, and uses `checked_results/results_1_checked.csv` as the cache:
+```bash
+python check_domains.py domains.txt results.csv 1.0 -t 1 -c checked_results/results_1_checked.csv
+```
+
+
 ### Rate Limits & HTTP 403 Forbidden Blocks
 The public RDAP bootstrap service is protected by Cloudflare, which enforces rate limits on both request frequency and connection concurrency.
 
