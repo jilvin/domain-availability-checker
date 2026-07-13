@@ -104,6 +104,13 @@ def check_rdap(domain: str, max_retries: int = 3, rate_limit_state: dict = None)
         except urllib.error.HTTPError as e:
             if e.code == 404:
                 return "Available", "Unregistered (404 Not Found)"
+            elif e.code == 403:
+                print(
+                    f"HTTP Error 403: Forbidden checking '{domain}'. Blocked due to abuse or other misbehaviour. Exiting...",
+                    file=sys.stderr,
+                    flush=True
+                )
+                return "Blocked", "Blocked (HTTP 403 Forbidden)"
             elif e.code == 429:
                 if rate_limit_state is not None:
                     with rate_limit_state["rate_limit_lock"]:
@@ -367,6 +374,9 @@ def process_domains(input_file: str, output_file: str, cache_file: str = None, d
                 
                 # Save progress progressively to prevent loss if terminated
                 save_results(quiet=True)
+                
+                if status == "Blocked":
+                    os._exit(1)
 
             with ThreadPoolExecutor(max_workers=threads) as executor:
                 list(executor.map(check_rdap_worker, candidates))

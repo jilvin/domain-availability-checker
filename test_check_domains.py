@@ -164,5 +164,55 @@ class TestDomainChecker(unittest.TestCase):
         self.assertIn("new.com", output_domains)
         self.assertEqual(len(rows), 2)
 
+    @patch("urllib.request.urlopen")
+    def test_check_rdap_handles_403(self, mock_urlopen):
+        """Test check_rdap when HTTP 403 Forbidden is returned."""
+        from urllib.error import HTTPError
+        import io
+        mock_urlopen.side_effect = HTTPError(
+            url="https://rdap.org/domain/blocked.com",
+            code=403,
+            msg="Forbidden",
+            hdrs=None,
+            fp=io.BytesIO(b"")
+        )
+
+        status, detail = check_domains.check_rdap("blocked.com", max_retries=1)
+        self.assertEqual(status, "Blocked")
+        self.assertEqual(detail, "Blocked (HTTP 403 Forbidden)")
+
+    @patch("os._exit")
+    @patch("check_domains.resolve_dns")
+    @patch("check_domains.check_rdap")
+    def test_process_domains_exits_on_403(self, mock_check_rdap, mock_resolve_dns, mock_os_exit):
+        """Test that process_domains exits immediately with status 1 on 403 Blocked."""
+        domains = ["blocked.com"]
+        with open(self.input_file, "w", encoding="utf-8") as f:
+            f.write("\n".join(domains) + "\n")
+
+        mock_resolve_dns.return_value = False
+        mock_check_rdap.return_value = ("Blocked", "Blocked (HTTP 403 Forbidden)")
+
+        check_domains.process_domains(
+            input_file=self.input_file,
+            output_file=self.output_file,
+            cache_file=None,
+            delay=0.01,
+            threads=2
+        )
+
+        mock_os_exit.assert_called_once_with(1)
+
+        # Assert output was saved
+        self.assertTrue(os.path.exists(self.output_file))
+        with open(self.output_file, "r", encoding="utf-8") as csvfile:
+            reader = csv.DictReader(csvfile)
+            rows = list(reader)
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["Domain"], "blocked.com")
+        self.assertEqual(rows[0]["Status"], "Blocked")
+        self.assertEqual(rows[0]["Details"], "Blocked (HTTP 403 Forbidden)")
+
 if __name__ == "__main__":
     unittest.main()
