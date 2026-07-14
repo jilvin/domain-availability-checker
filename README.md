@@ -1,6 +1,6 @@
 # Domain Availability Checker
 
-A fast, lightweight, and rate-limit-friendly command-line script to check domain availability in bulk. 
+A fast, lightweight, and rate-limit-friendly command-line script to check domain availability in bulk.
 
 Unlike traditional checkers that scrape websites or require developer registration with registrars (like GoDaddy or Namecheap), this tool runs **completely anonymously** and **requires no API keys**.
 
@@ -131,5 +131,27 @@ To run all tests:
 
 ```bash
 python -m unittest test_check_domains.py
+```
+
+## Linting & Formatting
+
+This project uses [Ruff](https://github.com/astral-sh/ruff) for code quality checks and formatting.
+
+To install Ruff (if not already installed):
+
+```bash
+pip install ruff
+```
+
+To run lint checks:
+
+```bash
+python -m ruff check check_domains.py test_check_domains.py
+```
+
+To automatically fix any auto-fixable issues:
+
+```bash
+python -m ruff check --fix check_domains.py test_check_domains.py
 ```
 

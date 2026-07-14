@@ -60,22 +60,21 @@ def check_rdap(domain: str, max_retries: int = 3, rate_limit_state: dict = None)
         url,
         headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) DomainAvailabilityChecker/1.0"}
     )
-    
+
     retries = 0
-    backoff = 2.0  # Initial backoff in seconds
     tld = domain.strip().lower().split(".")[-1] if "." in domain else ""
-    
+
     while True:
         if rate_limit_state is not None:
             while True:
                 with rate_limit_state["rate_limit_lock"]:
                     now = time.time()
-                    
+
                     # 1. Check if we are currently in cooldown
                     last_rl = rate_limit_state.get("last_rate_limit_time", 0.0)
                     cooldown_period = rate_limit_state.get("cooldown_period", 30.0)
                     cooldown_remaining = cooldown_period - (now - last_rl)
-                    
+
                     if cooldown_remaining > 0:
                         sleep_time = cooldown_remaining
                         is_cooldown_sleep = True
@@ -85,11 +84,11 @@ def check_rdap(domain: str, max_retries: int = 3, rate_limit_state: dict = None)
                         rate_limit_state["next_request_time"] = launch_time + rate_limit_state["delay"]
                         sleep_time = launch_time - now
                         is_cooldown_sleep = False
-                
+
                 # Sleep outside the lock to prevent blocking other threads
                 if sleep_time > 0:
                     time.sleep(sleep_time)
-                
+
                 if not is_cooldown_sleep:
                     # We slept for our launch slot. Check if a cooldown was triggered while we slept.
                     with rate_limit_state["rate_limit_lock"]:
@@ -116,7 +115,7 @@ def check_rdap(domain: str, max_retries: int = 3, rate_limit_state: dict = None)
                 failed_url = getattr(e, "filename", "") or ""
                 parsed = urlparse(failed_url)
                 host = parsed.netloc if parsed.netloc else ""
-                
+
                 if host and "rdap.org" not in host:
                     # It's a specific registry block, not rdap.org bootstrap!
                     if rate_limit_state is not None:
@@ -158,7 +157,7 @@ def check_rdap(domain: str, max_retries: int = 3, rate_limit_state: dict = None)
                             )
                             rate_limit_state["delay"] = new_delay
                             rate_limit_state["last_rate_limit_time"] = now_time
-                
+
                 if retries < max_retries:
                     retries += 1
                     retry_wait = rate_limit_state.get("cooldown_period", 30.0) if rate_limit_state else 30.0
@@ -177,7 +176,7 @@ def check_rdap(domain: str, max_retries: int = 3, rate_limit_state: dict = None)
             return "Error", f"Network error: {e.reason}"
         except Exception as e:
             return "Error", f"Unexpected error: {str(e)}"
-        
+
         return "Unknown", "Could not determine status"
 
 def parse_date(date_str: str) -> datetime:
@@ -185,6 +184,8 @@ def parse_date(date_str: str) -> datetime:
     Parses a date string from various common formats (including ISO and standard CSV formats).
     Returns a datetime object if successful, or None if parsing fails.
     """
+    if not date_str or not isinstance(date_str, str):
+        return None
     formats = [
         "%Y-%m-%d %H:%M:%S",
         "%d,%m,%Y %H:%M",
@@ -207,7 +208,7 @@ def parse_date(date_str: str) -> datetime:
 def process_domains(input_file: str, output_file: str, cache_file: str = None, delay: float = 1.2, retries: int = 3, threads: int = 1, cooldown_period: float = 30.0):
     """
     Processes a list of domains from input_file, checking their availability.
-    
+
     The process consists of:
       1. Loading any existing results from cache_file and output_file.
       2. Skipping domains that have recent cached results (less than 30 days old).
@@ -244,20 +245,51 @@ def process_domains(input_file: str, output_file: str, cache_file: str = None, d
     # Load existing results if they exist
     existing = {}
     if cache_file:
-        try:
-            with open(cache_file, 'r', encoding='utf-8') as csvfile:
-                reader = csv.DictReader(csvfile)
-                for row in reader:
-                    domain = row.get("Domain", "").strip().lower()
-                    if domain:
-                        status = row.get("Status", "")
-                        details = row.get("Details", "")
-                        last_checked = row.get("LastChecked", "")
-                        existing[domain] = (status, details, last_checked)
-        except FileNotFoundError:
-            pass
-        except Exception as e:
-            print(f"Warning: Could not read cache file '{cache_file}': {e}")
+        cache_files = []
+        is_dir = False
+        if os.path.isdir(cache_file):
+            is_dir = True
+            try:
+                for entry in os.scandir(cache_file):
+                    if entry.is_file() and entry.name.lower().endswith('.csv'):
+                        cache_files.append(entry.path)
+                cache_files.sort()  # Sort alphabetically for deterministic behavior
+                print(f"Found {len(cache_files)} cache files in directory '{cache_file}'")
+            except Exception as e:
+                print(f"Warning: Could not read cache directory '{cache_file}': {e}")
+        else:
+            cache_files = [cache_file]
+
+        for filepath in cache_files:
+            try:
+                with open(filepath, 'r', encoding='utf-8') as csvfile:
+                    reader = csv.DictReader(csvfile)
+                    for row in reader:
+                        domain = row.get("Domain", "").strip().lower()
+                        if domain:
+                            status = row.get("Status", "")
+                            details = row.get("Details", "")
+                            last_checked = row.get("LastChecked", "")
+
+                            # Merge logic: prioritize checked results and newer timestamps
+                            if domain in existing:
+                                existing_status, _, existing_last_checked = existing[domain]
+                                if status not in ("Unchecked", "Not checked yet", ""):
+                                    if existing_status in ("Unchecked", "Not checked yet", ""):
+                                        existing[domain] = (status, details, last_checked)
+                                    else:
+                                        # Both checked, check timestamps
+                                        new_dt = parse_date(last_checked)
+                                        old_dt = parse_date(existing_last_checked)
+                                        if new_dt and (not old_dt or new_dt > old_dt):
+                                            existing[domain] = (status, details, last_checked)
+                            else:
+                                existing[domain] = (status, details, last_checked)
+            except FileNotFoundError:
+                if not is_dir:
+                    pass
+            except Exception as e:
+                print(f"Warning: Could not read cache file '{filepath}': {e}")
 
     if output_file:
         try:
@@ -294,12 +326,12 @@ def process_domains(input_file: str, output_file: str, cache_file: str = None, d
                 dt = parse_date(last_checked)
                 if dt:
                     days_old = (now - dt).days
-            
+
             if days_old < 30:
                 print(f"Skipping {domain} (cached result is {days_old} days old: {status} - {detail})")
                 results[domain] = (status, detail, last_checked)
                 continue
-        
+
         to_check.append(domain)
 
     if not to_check:
@@ -342,7 +374,7 @@ def process_domains(input_file: str, output_file: str, cache_file: str = None, d
         if to_check:
             print(f"Starting concurrent DNS pre-filtering using {threads} threads...")
             dns_resolved_count = 0
-            
+
             def check_dns_worker(domain):
                 return resolve_dns(domain)
 
@@ -368,10 +400,10 @@ def process_domains(input_file: str, output_file: str, cache_file: str = None, d
             domain_to_index = {domain: i for i, domain in enumerate(domains)}
             candidates.sort(key=lambda d: domain_to_index.get(d, 999999))
 
-            print(f"\nDNS pre-filtering complete.")
+            print("\nDNS pre-filtering complete.")
             print(f"Registered (Active DNS): {dns_resolved_count}")
             print(f"Candidates for RDAP lookup: {len(candidates)}")
-            
+
             # Commit DNS checks to cache right away
             save_results(force=True)
 
@@ -384,7 +416,7 @@ def process_domains(input_file: str, output_file: str, cache_file: str = None, d
                 "rate_limit_lock": threading.Lock()
             }
             print(f"\nStarting concurrent RDAP lookups for {len(candidates)} candidates using {threads} threads with a {rate_limit_state['delay']}s launch delay...")
-            
+
             rdap_start_time = time.time()
 
             def format_eta(seconds: float) -> str:
@@ -405,24 +437,24 @@ def process_domains(input_file: str, output_file: str, cache_file: str = None, d
             def check_rdap_worker(domain):
                 nonlocal completed_count
                 status, detail = check_rdap(domain, max_retries=retries, rate_limit_state=rate_limit_state)
-                
+
                 with completed_lock:
                     completed_count += 1
                     current_completed = completed_count
-                
+
                 # Calculate ETA based on elapsed time and candidates remaining
                 elapsed = time.time() - rdap_start_time
                 avg_time = elapsed / current_completed
                 remaining = len(candidates) - current_completed
                 eta_str = format_eta(avg_time * remaining) if remaining > 0 else "0s"
-                
+
                 print(f"[{current_completed}/{len(candidates)}] Querying RDAP for {domain}... {status.upper()} ({detail}) [ETA: {eta_str}]", flush=True)
-                
+
                 results[domain] = (status, detail, now.strftime("%Y-%m-%d %H:%M:%S"))
-                
+
                 # Save progress progressively to prevent loss if terminated
                 save_results(quiet=True)
-                
+
                 if status == "Blocked":
                     if "registry" not in detail:
                         save_results(quiet=True, force=True)
@@ -440,18 +472,18 @@ if __name__ == "__main__":
     parser.add_argument("delay", type=float, nargs="?", default=1.2, help="Delay between RDAP queries in seconds")
     parser.add_argument("-r", "--retries", type=int, default=3, help="RDAP rate limit retries count")
     parser.add_argument("-t", "--threads", type=int, default=1, help="Number of concurrent threads")
-    parser.add_argument("-c", "--cache", help="Optional cache CSV file to skip already checked domains")
-    
+    parser.add_argument("-c", "--cache", help="Optional cache CSV file or directory containing CSV files to skip already checked domains")
+
     args = parser.parse_args()
-    
+
     if args.delay < 0:
         print("Delay cannot be negative. Defaulting to 1.2 seconds.", file=sys.stderr)
         args.delay = 1.2
-        
+
     if args.retries < 0:
         print("Retries cannot be negative. Defaulting to 3.", file=sys.stderr)
         args.retries = 3
-        
+
     if args.threads <= 0:
         print("Threads must be a positive integer. Defaulting to 1.", file=sys.stderr)
         args.threads = 1
@@ -471,3 +503,4 @@ if __name__ == "__main__":
         retries=args.retries,
         threads=args.threads
     )
+

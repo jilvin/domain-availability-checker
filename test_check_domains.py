@@ -314,20 +314,20 @@ class TestDomainChecker(unittest.TestCase):
         """Test that running the script with > 2 threads prints a red warning to stderr."""
         import subprocess
         import sys
-        
+
         with open(self.input_file, "w", encoding="utf-8") as f:
             f.write("example.com\n")
-            
+
         # Run with 3 threads. We expect the warning in stderr.
         result = subprocess.run(
             [sys.executable, "check_domains.py", self.input_file, self.output_file, "-t", "3"],
             capture_output=True,
             text=True
         )
-        
+
         # Check that stderr contains the red ANSI warning message
         self.assertIn("\033[91mWarning:", result.stderr)
-        
+
         # Run with 2 threads. We expect no such warning.
         result_ok = subprocess.run(
             [sys.executable, "check_domains.py", self.input_file, self.output_file, "-t", "2"],
@@ -342,10 +342,10 @@ class TestDomainChecker(unittest.TestCase):
         """Test that the rate limiter does not hold the lock while sleeping."""
         import check_domains
         import threading
-        
+
         lock_was_held_during_sleep = []
         rate_limit_lock = threading.Lock()
-        
+
         class MockClock:
             def __init__(self):
                 self.time_val = 100.0
@@ -357,16 +357,16 @@ class TestDomainChecker(unittest.TestCase):
                 else:
                     lock_was_held_during_sleep.append(False)
                 self.time_val += seconds
-                
+
         clock = MockClock()
         mock_time.time.side_effect = clock.time
         mock_time.sleep.side_effect = clock.sleep
-        
+
         # Mock urlopen to return a mock response
         mock_response = MagicMock()
         mock_response.status = 200
         mock_urlopen.return_value.__enter__.return_value = mock_response
-        
+
         rate_limit_state = {
             "delay": 1.0,
             "next_request_time": 0.0,
@@ -374,12 +374,12 @@ class TestDomainChecker(unittest.TestCase):
             "cooldown_period": 30.0,
             "rate_limit_lock": rate_limit_lock
         }
-        
+
         # First query (t=100.0) -> next_request_time becomes 101.0
         check_domains.check_rdap("d1.com", max_retries=1, rate_limit_state=rate_limit_state)
         # Second query (t=100.0) -> next_request_time becomes 102.0, sleeps 1.0s, t becomes 101.0
         check_domains.check_rdap("d2.com", max_retries=1, rate_limit_state=rate_limit_state)
-        
+
         # Now trigger a cooldown sleep
         rate_limit_state["last_rate_limit_time"] = 101.0
         # Third query (t=101.0) -> next_request_time becomes 102.0. But wait!
@@ -387,10 +387,97 @@ class TestDomainChecker(unittest.TestCase):
         # So it sleeps for 30.0s (t becomes 131.0).
         # On loop back (t=131.0), cooldown has expired. It reserves slot at t=131.0, next_request_time becomes 132.0.
         check_domains.check_rdap("d3.com", max_retries=1, rate_limit_state=rate_limit_state)
-        
+
         # Verify that sleeps occurred and lock was never held during sleeps
         self.assertTrue(len(lock_was_held_during_sleep) > 0)
         self.assertNotIn(True, lock_was_held_during_sleep)
 
+    @patch("check_domains.resolve_dns")
+    @patch("check_domains.check_rdap")
+    def test_process_domains_with_directory_cache(self, mock_check_rdap, mock_resolve_dns):
+        """Test loading cache from a directory containing multiple CSV files, including merge priority rules."""
+        # Create a temp directory for cache
+        cache_dir = os.path.join(self.test_dir, "cache_dir")
+        os.makedirs(cache_dir, exist_ok=True)
+
+        # We will create two cache files:
+        # file1.csv:
+        #   - domain1.com: checked, Registered, 2026-07-10 10:00:00
+        #   - domain2.com: checked, Registered (Older), 2026-07-09 10:00:00
+        #   - domain3.com: Unchecked, Not checked yet, ""
+        # file2.csv:
+        #   - domain2.com: checked, Registered (Newer), 2026-07-11 10:00:00  (should override domain2.com)
+        #   - domain3.com: checked, Available, 2026-07-10 12:00:00          (should override Unchecked)
+        #   - domain4.com: checked, Registered, 2026-07-10 10:00:00
+
+        file1_path = os.path.join(cache_dir, "file1.csv")
+        with open(file1_path, "w", newline="", encoding="utf-8") as csvfile:
+            writer = csv.writer(csvfile)
+            writer.writerow(["Domain", "Status", "Details", "LastChecked"])
+            writer.writerow(["domain1.com", "Registered", "Active DNS (old)", "2026-07-10 10:00:00"])
+            writer.writerow(["domain2.com", "Registered", "Active DNS (old)", "2026-07-09 10:00:00"])
+            writer.writerow(["domain3.com", "Unchecked", "Not checked yet", ""])
+
+        file2_path = os.path.join(cache_dir, "file2.csv")
+        with open(file2_path, "w", newline="", encoding="utf-8") as csvfile:
+            writer = csv.writer(csvfile)
+            writer.writerow(["Domain", "Status", "Details", "LastChecked"])
+            writer.writerow(["domain2.com", "Registered", "Active DNS (new)", "2026-07-11 10:00:00"])
+            writer.writerow(["domain3.com", "Available", "Available (new)", "2026-07-10 12:00:00"])
+            writer.writerow(["domain4.com", "Registered", "Active DNS", "2026-07-10 10:00:00"])
+
+        # Input domains:
+        # domain1.com, domain2.com, domain3.com, domain4.com, new.com
+        domains = ["domain1.com", "domain2.com", "domain3.com", "domain4.com", "new.com"]
+        with open(self.input_file, "w", encoding="utf-8") as f:
+            f.write("\n".join(domains) + "\n")
+
+        # Mock behaviors
+        mock_resolve_dns.side_effect = lambda d: d == "new.com"
+        mock_check_rdap.return_value = ("Registered", "Registered (Inactive DNS)")
+
+        # Run process_domains using cache_dir
+        check_domains.process_domains(
+            input_file=self.input_file,
+            output_file=self.output_file,
+            cache_file=cache_dir,
+            delay=0.01,
+            threads=2
+        )
+
+        # Assertions
+        # 1. DNS resolve should only run for "new.com" (since domain1, domain2, domain3, domain4 are all cached in directory)
+        mock_resolve_dns.assert_called_once_with("new.com")
+
+        # 2. Output file check
+        self.assertTrue(os.path.exists(self.output_file))
+        with open(self.output_file, "r", encoding="utf-8") as csvfile:
+            reader = csv.DictReader(csvfile)
+            rows = list(reader)
+
+        self.assertEqual(len(rows), 5)
+        row_dict = {row["Domain"]: row for row in rows}
+
+        # Check domain1.com (kept from file1)
+        self.assertEqual(row_dict["domain1.com"]["Status"], "Registered")
+        self.assertEqual(row_dict["domain1.com"]["Details"], "Active DNS (old)")
+        self.assertEqual(row_dict["domain1.com"]["LastChecked"], "2026-07-10 10:00:00")
+
+        # Check domain2.com (overridden by newer date from file2)
+        self.assertEqual(row_dict["domain2.com"]["Status"], "Registered")
+        self.assertEqual(row_dict["domain2.com"]["Details"], "Active DNS (new)")
+        self.assertEqual(row_dict["domain2.com"]["LastChecked"], "2026-07-11 10:00:00")
+
+        # Check domain3.com (overridden by checked status from file2 instead of Unchecked)
+        self.assertEqual(row_dict["domain3.com"]["Status"], "Available")
+        self.assertEqual(row_dict["domain3.com"]["Details"], "Available (new)")
+        self.assertEqual(row_dict["domain3.com"]["LastChecked"], "2026-07-10 12:00:00")
+
+        # Check domain4.com (kept from file2)
+        self.assertEqual(row_dict["domain4.com"]["Status"], "Registered")
+        self.assertEqual(row_dict["domain4.com"]["Details"], "Active DNS")
+        self.assertEqual(row_dict["domain4.com"]["LastChecked"], "2026-07-10 10:00:00")
+
 if __name__ == "__main__":
     unittest.main()
+
