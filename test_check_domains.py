@@ -73,23 +73,17 @@ class TestDomainChecker(unittest.TestCase):
         with self.assertRaises(AssertionError):
             mock_resolve_dns.assert_any_call("cached.com")
 
-        # 2. Output file should contain all domains (newly checked and cached)
+        # 2. Output file should contain only newly checked domains (not cached ones)
         self.assertTrue(os.path.exists(self.output_file))
         with open(self.output_file, "r", encoding="utf-8") as csvfile:
             reader = csv.DictReader(csvfile)
             rows = list(reader)
 
         output_domains = [row["Domain"] for row in rows]
-        self.assertIn("cached.com", output_domains)
+        self.assertNotIn("cached.com", output_domains)
         self.assertIn("new-active.com", output_domains)
         self.assertIn("new-inactive.com", output_domains)
-        self.assertEqual(len(rows), 3)
-
-        # 3. Verify cached values are retained correctly in the output file
-        cached_row = next(row for row in rows if row["Domain"] == "cached.com")
-        self.assertEqual(cached_row["Status"], "Registered")
-        self.assertEqual(cached_row["Details"], "Registered (Active DNS)")
-        self.assertEqual(cached_row["LastChecked"], "2026-07-12 10:58:48")
+        self.assertEqual(len(rows), 2)
 
     @patch("check_domains.resolve_dns")
     @patch("check_domains.check_rdap")
@@ -455,28 +449,68 @@ class TestDomainChecker(unittest.TestCase):
             reader = csv.DictReader(csvfile)
             rows = list(reader)
 
-        self.assertEqual(len(rows), 5)
-        row_dict = {row["Domain"]: row for row in rows}
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["Domain"], "new.com")
+        self.assertEqual(rows[0]["Status"], "Registered")
 
-        # Check domain1.com (kept from file1)
-        self.assertEqual(row_dict["domain1.com"]["Status"], "Registered")
-        self.assertEqual(row_dict["domain1.com"]["Details"], "Active DNS (old)")
-        self.assertEqual(row_dict["domain1.com"]["LastChecked"], "2026-07-10 10:00:00")
+    @patch("check_domains.resolve_dns")
+    @patch("check_domains.check_rdap")
+    def test_cache_vs_output_retry_behavior(self, mock_check_rdap, mock_resolve_dns):
+        """Test that Blocked/Rate Limited from cache folder are skipped, but from output_file they are retried."""
+        # 1. Create a cache file with domain1.com (Blocked, recent) and domain2.com (Rate Limited, recent)
+        cache_dir = os.path.join(self.test_dir, "cache_dir_retry")
+        os.makedirs(cache_dir, exist_ok=True)
+        file_path = os.path.join(cache_dir, "cache.csv")
+        with open(file_path, "w", newline="", encoding="utf-8") as csvfile:
+            writer = csv.writer(csvfile)
+            writer.writerow(["Domain", "Status", "Details", "LastChecked"])
+            writer.writerow(["domain1.com", "Blocked", "Blocked (TLD returned 403)", "2026-07-14 10:00:00"])
+            writer.writerow(["domain2.com", "Rate Limited", "Rate limited by registry", "2026-07-14 10:00:00"])
 
-        # Check domain2.com (overridden by newer date from file2)
-        self.assertEqual(row_dict["domain2.com"]["Status"], "Registered")
-        self.assertEqual(row_dict["domain2.com"]["Details"], "Active DNS (new)")
-        self.assertEqual(row_dict["domain2.com"]["LastChecked"], "2026-07-11 10:00:00")
+        # 2. Create an output file with domain3.com (Blocked, recent) and domain4.com (Rate Limited, recent)
+        with open(self.output_file, "w", newline="", encoding="utf-8") as csvfile:
+            writer = csv.writer(csvfile)
+            writer.writerow(["Domain", "Status", "Details", "LastChecked"])
+            writer.writerow(["domain3.com", "Blocked", "Blocked (TLD returned 403)", "2026-07-14 10:00:00"])
+            writer.writerow(["domain4.com", "Rate Limited", "Rate limited by registry", "2026-07-14 10:00:00"])
 
-        # Check domain3.com (overridden by checked status from file2 instead of Unchecked)
-        self.assertEqual(row_dict["domain3.com"]["Status"], "Available")
-        self.assertEqual(row_dict["domain3.com"]["Details"], "Available (new)")
-        self.assertEqual(row_dict["domain3.com"]["LastChecked"], "2026-07-10 12:00:00")
+        # Input domains: domain1, domain2, domain3, domain4
+        domains = ["domain1.com", "domain2.com", "domain3.com", "domain4.com"]
+        with open(self.input_file, "w", encoding="utf-8") as f:
+            f.write("\n".join(domains) + "\n")
 
-        # Check domain4.com (kept from file2)
-        self.assertEqual(row_dict["domain4.com"]["Status"], "Registered")
-        self.assertEqual(row_dict["domain4.com"]["Details"], "Active DNS")
-        self.assertEqual(row_dict["domain4.com"]["LastChecked"], "2026-07-10 10:00:00")
+        # Mock behaviors: resolve fails (NXDOMAIN) so they go to RDAP check
+        mock_resolve_dns.return_value = False
+        mock_check_rdap.return_value = ("Available", "Unregistered (404 Not Found)")
+
+        # Run process_domains using cache_dir and output_file
+        check_domains.process_domains(
+            input_file=self.input_file,
+            output_file=self.output_file,
+            cache_file=cache_dir,
+            delay=0.01,
+            threads=2
+        )
+
+        # Assertions:
+        # - domain1.com (Blocked in cache) and domain2.com (Rate Limited in cache) should be SKIPPED (not resolved or checked)
+        # - domain3.com (Blocked in output) and domain4.com (Rate Limited in output) should be RETRIED (resolved/checked)
+        called_domains = [args[0][0] for args in mock_check_rdap.call_args_list]
+        self.assertNotIn("domain1.com", called_domains)
+        self.assertNotIn("domain2.com", called_domains)
+        self.assertIn("domain3.com", called_domains)
+        self.assertIn("domain4.com", called_domains)
+
+        # Output file checks
+        with open(self.output_file, "r", encoding="utf-8") as csvfile:
+            reader = csv.DictReader(csvfile)
+            rows = list(reader)
+        output_domains = [row["Domain"] for row in rows]
+        self.assertNotIn("domain1.com", output_domains)
+        self.assertNotIn("domain2.com", output_domains)
+        self.assertIn("domain3.com", output_domains)
+        self.assertIn("domain4.com", output_domains)
+        self.assertEqual(len(rows), 2)
 
 if __name__ == "__main__":
     unittest.main()

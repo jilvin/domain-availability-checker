@@ -243,7 +243,7 @@ def process_domains(input_file: str, output_file: str, cache_file: str = None, d
         sys.exit(0)
 
     # Load existing results if they exist
-    existing = {}
+    cache_existing = {}
     if cache_file:
         cache_files = []
         is_dir = False
@@ -272,25 +272,26 @@ def process_domains(input_file: str, output_file: str, cache_file: str = None, d
                             last_checked = row.get("LastChecked", "")
 
                             # Merge logic: prioritize checked results and newer timestamps
-                            if domain in existing:
-                                existing_status, _, existing_last_checked = existing[domain]
+                            if domain in cache_existing:
+                                existing_status, _, existing_last_checked = cache_existing[domain]
                                 if status not in ("Unchecked", "Not checked yet", ""):
                                     if existing_status in ("Unchecked", "Not checked yet", ""):
-                                        existing[domain] = (status, details, last_checked)
+                                        cache_existing[domain] = (status, details, last_checked)
                                     else:
                                         # Both checked, check timestamps
                                         new_dt = parse_date(last_checked)
                                         old_dt = parse_date(existing_last_checked)
                                         if new_dt and (not old_dt or new_dt > old_dt):
-                                            existing[domain] = (status, details, last_checked)
+                                            cache_existing[domain] = (status, details, last_checked)
                             else:
-                                existing[domain] = (status, details, last_checked)
+                                cache_existing[domain] = (status, details, last_checked)
             except FileNotFoundError:
                 if not is_dir:
                     pass
             except Exception as e:
                 print(f"Warning: Could not read cache file '{filepath}': {e}")
 
+    output_existing = {}
     if output_file:
         try:
             with open(output_file, 'r', encoding='utf-8') as csvfile:
@@ -301,12 +302,15 @@ def process_domains(input_file: str, output_file: str, cache_file: str = None, d
                         status = row.get("Status", "")
                         details = row.get("Details", "")
                         last_checked = row.get("LastChecked", "")
-                        if status not in ("Unchecked", "Not checked yet", "") or domain not in existing:
-                            existing[domain] = (status, details, last_checked)
+                        if status not in ("Unchecked", "Not checked yet", "") or domain not in output_existing:
+                            output_existing[domain] = (status, details, last_checked)
         except FileNotFoundError:
             pass
         except Exception as e:
             print(f"Warning: Could not read existing output file '{output_file}': {e}")
+
+    existing = cache_existing.copy()
+    existing.update(output_existing)
 
     now = datetime.now()
     results = {}
@@ -314,8 +318,8 @@ def process_domains(input_file: str, output_file: str, cache_file: str = None, d
     candidates = []
 
     for domain in domains:
-        if domain in existing:
-            status, detail, last_checked = existing[domain]
+        if domain in output_existing:
+            status, detail, last_checked = output_existing[domain]
             if status in ("Unchecked", "Rate Limited", "Error", "Unknown", "Blocked"):
                 # Already verified as NXDOMAIN (Candidate) in a previous run, skip DNS check and queue for retry
                 candidates.append(domain)
@@ -331,6 +335,19 @@ def process_domains(input_file: str, output_file: str, cache_file: str = None, d
                 print(f"Skipping {domain} (cached result is {days_old} days old: {status} - {detail})")
                 results[domain] = (status, detail, last_checked)
                 continue
+
+        elif domain in cache_existing:
+            status, detail, last_checked = cache_existing[domain]
+            if status not in ("Unchecked", "Not checked yet", ""):
+                days_old = 9999
+                if last_checked:
+                    dt = parse_date(last_checked)
+                    if dt:
+                        days_old = (now - dt).days
+
+                if days_old < 30:
+                    print(f"Skipping {domain} (cached result is {days_old} days old: {status} - {detail})")
+                    continue
 
         to_check.append(domain)
 
@@ -357,11 +374,12 @@ def process_domains(input_file: str, output_file: str, cache_file: str = None, d
                     for d in domains:
                         if d in results:
                             status, detail, last_checked = results[d]
-                        elif d in existing:
-                            status, detail, last_checked = existing[d]
-                        else:
-                            status, detail, last_checked = "Unchecked", "Not checked yet", ""
-                        writer.writerow([d, status, detail, last_checked])
+                            writer.writerow([d, status, detail, last_checked])
+                        elif d in output_existing:
+                            status, detail, last_checked = output_existing[d]
+                            writer.writerow([d, status, detail, last_checked])
+                        elif d not in cache_existing:
+                            writer.writerow([d, "Unchecked", "Not checked yet", ""])
                 if not quiet:
                     print(f"\nProgress saved to: {output_file}")
             except Exception as e:
