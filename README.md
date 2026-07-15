@@ -4,6 +4,9 @@ A fast, lightweight, and rate-limit-friendly command-line script to check domain
 
 Unlike traditional checkers that scrape websites or require developer registration with registrars (like GoDaddy or Namecheap), this tool runs **completely anonymously** and **requires no API keys**.
 
+> [!NOTE]
+> For a more mature implementation, check out [tldx](https://github.com/brandonyoungdev/tldx).
+
 ## Features
 
 - **No Registrar Accounts / API Keys Required:** Runs 100% out of the box using public standards.
