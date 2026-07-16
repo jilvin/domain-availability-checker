@@ -104,7 +104,12 @@ Runs the checker with a 1.2s delay, 20 threads, and uses `checked_results/result
 python check_domains.py domains.txt results.csv 1.2 -t 20 -c checked_results/results_1_checked.csv
 ```
 
-
+#### 7. Appending New Domains & Auto-Resuming (Continuous Check Mode)
+If you have a master list and want to check additional domains over time without re-checking what is already resolved, simply append the new domains to the end of your input file (`domains.txt`) and run the script pointing to your existing output file (`results.csv`):
+```bash
+python check_domains.py domains.txt results.csv 1.2 --threads 2
+```
+On launch, the script automatically parses the existing `results.csv` file, skips any domains with active cached statuses (less than 30 days old), and only resolves DNS and RDAP for the newly added domain entries.
 
 ### Rate Limits & HTTP 403 Forbidden Blocks
 The public RDAP bootstrap service is protected by Cloudflare, which enforces rate limits on both request frequency and connection concurrency.
@@ -158,3 +163,9 @@ To automatically fix any auto-fixable issues:
 python -m ruff check --fix check_domains.py test_check_domains.py
 ```
 
+## Known Issues & Limitations
+
+*   **RDAP False Positives (HTTP 404 on Registered Domains)**:
+    *   **The Issue**: If a registered domain has broken, inactive, or misconfigured nameservers (causing DNS pre-filtering to fail with `SERVFAIL` or timeout), the script falls back to querying `rdap.org`. If the registry's RDAP server does not support the domain correctly or fails to redirect (resulting in an `HTTP 404 Not Found` response), the script will falsely report the domain as `Available`.
+    *   **Affected TLDs**: This commonly occurs on country-code TLDs (ccTLDs) like `.io` and `.so` where bootstrap mappings can be inconsistent.
+    *   **Mitigation**: Before purchasing, always double-check any domain flagged as `Available` (especially on `.io` or `.so`) using a direct port 43 WHOIS command line lookup or a registrar portal.
