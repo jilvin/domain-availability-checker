@@ -512,6 +512,53 @@ class TestDomainChecker(unittest.TestCase):
         self.assertIn("domain4.com", output_domains)
         self.assertEqual(len(rows), 2)
 
+    @patch("socket.socket")
+    def test_check_whois_available(self, mock_socket_class):
+        """Test check_whois for a domain that is available."""
+        mock_socket = MagicMock()
+        mock_socket_class.return_value = mock_socket
+        mock_socket.recv.side_effect = [b"Domain not found.\n", b""]
+
+        status, detail = check_domains.check_whois("testavailable.io")
+        self.assertEqual(status, "Available")
+        self.assertIn("WHOIS io", detail)
+
+    @patch("socket.socket")
+    def test_check_whois_registered(self, mock_socket_class):
+        """Test check_whois for a domain that is registered."""
+        mock_socket = MagicMock()
+        mock_socket_class.return_value = mock_socket
+        mock_socket.recv.side_effect = [b"Domain Name: sentinel.io\nRegistry Domain ID: 12345\nRegistrar: 101domain\n", b""]
+
+        status, detail = check_domains.check_whois("sentinel.io")
+        self.assertEqual(status, "Registered")
+        self.assertIn("WHOIS io", detail)
+
+    @patch("socket.socket")
+    def test_check_whois_rate_limited(self, mock_socket_class):
+        """Test check_whois when rate limited."""
+        mock_socket = MagicMock()
+        mock_socket_class.return_value = mock_socket
+        mock_socket.recv.side_effect = [b"WHOIS query limit exceeded. Please try again later.\n", b""]
+
+        status, detail = check_domains.check_whois("sentinel.io")
+        self.assertEqual(status, "Rate Limited")
+        self.assertIn("rate-limited", detail)
+
+    @patch("socket.socket")
+    def test_get_whois_server_lookup(self, mock_socket_class):
+        """Test get_whois_server querying whois.iana.org."""
+        mock_socket = MagicMock()
+        mock_socket_class.return_value = mock_socket
+        mock_socket.recv.side_effect = [b"refer: whois.nic.xyz\nwhois: whois.nic.xyz\n", b""]
+
+        if "xyz" in check_domains.whois_server_cache:
+            del check_domains.whois_server_cache["xyz"]
+
+        server = check_domains.get_whois_server("xyz")
+        self.assertEqual(server, "whois.nic.xyz")
+        self.assertIn("xyz", check_domains.whois_server_cache)
+
 if __name__ == "__main__":
     unittest.main()
 

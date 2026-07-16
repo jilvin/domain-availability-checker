@@ -50,6 +50,98 @@ def resolve_dns(domain: str) -> bool:
         # Any other network or socket error
         return False
 
+whois_server_cache = {
+    "io": "whois.nic.io",
+    "so": "whois.nic.so",
+    "co": "whois.registry.co",
+}
+whois_server_cache_lock = threading.Lock()
+
+def get_whois_server(tld: str) -> str:
+    """Discovers the authoritative WHOIS server for a given TLD via whois.iana.org."""
+    tld = tld.lower().strip()
+    with whois_server_cache_lock:
+        if tld in whois_server_cache:
+            return whois_server_cache[tld]
+
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.settimeout(5.0)
+        s.connect(('whois.iana.org', 43))
+        s.sendall((tld + '\r\n').encode('utf-8'))
+        res = b''
+        while True:
+            data = s.recv(4096)
+            if not data:
+                break
+            res += data
+        text = res.decode('utf-8', errors='ignore')
+        whois_server = None
+        for line in text.splitlines():
+            if line.strip().lower().startswith('whois:'):
+                whois_server = line.split(':', 1)[1].strip()
+                break
+        with whois_server_cache_lock:
+            whois_server_cache[tld] = whois_server
+        return whois_server
+    except Exception:
+        return None
+
+def check_whois(domain: str) -> Tuple[str, str]:
+    """Queries the authoritative WHOIS server for a domain to determine availability."""
+    tld = domain.strip().lower().split(".")[-1] if "." in domain else ""
+    if not tld:
+        return "Error", "Invalid TLD for WHOIS lookup"
+    
+    whois_server = get_whois_server(tld)
+    if not whois_server:
+        return "Unknown", f"No WHOIS server found for TLD '{tld}'"
+        
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.settimeout(5.0)
+        s.connect((whois_server, 43))
+        s.sendall((domain + '\r\n').encode('utf-8'))
+        res = b''
+        while True:
+            data = s.recv(4096)
+            if not data:
+                break
+            res += data
+        out = res.decode('utf-8', errors='ignore')
+        lower_out = out.lower()
+        
+        # 1. Check for clear availability indicators first
+        available_indicators = []
+        if tld == "io":
+            available_indicators = ["domain not found"]
+        elif tld in ("so", "co"):
+            available_indicators = ["does not exist", "domain not found"]
+        else:
+            available_indicators = ["domain not found", "no object found", "does not exist", "no match for", "not registered"]
+            
+        for term in available_indicators:
+            if term in lower_out:
+                return "Available", f"Unregistered (WHOIS {tld})"
+                
+        # 2. Check for clear registration indicators
+        registered_indicators = ["domain name:", "registry domain id:", "registrar:", "creation date:"]
+        for term in registered_indicators:
+            if term in lower_out:
+                return "Registered", f"Registered (WHOIS {tld})"
+                
+        # 3. Check for rate limiting if we don't have registration/availability markers
+        rate_limit_indicators = ["rate limit", "too many queries", "quota exceeded", "connection refused", "throttled", "please try again"]
+        for term in rate_limit_indicators:
+            if term in lower_out:
+                return "Rate Limited", f"WHOIS registry rate-limited requests ({tld})"
+                
+        return "Unknown", f"WHOIS response could not be parsed for '{tld}'"
+    except socket.timeout:
+        return "Error", "WHOIS connection timed out"
+    except Exception as e:
+        return "Error", f"WHOIS error: {str(e)}"
+
 def check_rdap(domain: str, max_retries: int = 3, rate_limit_state: dict = None) -> Tuple[str, str]:
     """
     Queries the public RDAP bootstrap server to determine registration status.
@@ -104,12 +196,78 @@ def check_rdap(domain: str, max_retries: int = 3, rate_limit_state: dict = None)
                     return "Blocked", f"Blocked (TLD '{tld}' registry returned 403)"
 
         try:
+            whois_tlds = {"io", "so", "co"}
+            if tld in whois_tlds:
+                status, detail = check_whois(domain)
+                if status == "Rate Limited":
+                    if rate_limit_state is not None:
+                        with rate_limit_state["rate_limit_lock"]:
+                            now_time = time.time()
+                            last_rl = rate_limit_state.get("last_rate_limit_time", 0.0)
+                            cooldown_period = rate_limit_state.get("cooldown_period", 30.0)
+                            if now_time - last_rl >= cooldown_period:
+                                old_delay = rate_limit_state.get("delay", 1.5)
+                                new_delay = old_delay + 0.1
+                                print(
+                                    f"Rate limit hit! Dynamically scaling query delay from {old_delay:.2f}s to {new_delay:.2f}s.",
+                                    file=sys.stderr,
+                                    flush=True
+                                )
+                                rate_limit_state["delay"] = new_delay
+                                rate_limit_state["last_rate_limit_time"] = now_time
+
+                    if retries < max_retries:
+                        retries += 1
+                        retry_wait = rate_limit_state.get("cooldown_period", 30.0) if rate_limit_state else 30.0
+                        print(
+                            f"Rate limited checking '{domain}'. Waiting {retry_wait:.1f}s before retry {retries}/{max_retries}...",
+                            file=sys.stderr,
+                            flush=True
+                        )
+                        time.sleep(retry_wait)
+                        continue
+                    else:
+                        return "Rate Limited", "WHOIS registry rate-limited requests"
+                return status, detail
+
             # We perform a GET request. A 200 OK means the domain is registered.
             with urllib.request.urlopen(req, timeout=5.0) as response:
                 if response.status == 200:
                     return "Registered", "Registered (Inactive DNS)"
         except urllib.error.HTTPError as e:
             if e.code == 404:
+                status, detail = check_whois(domain)
+                if status in ("Registered", "Rate Limited", "Error"):
+                    if status == "Rate Limited":
+                        if rate_limit_state is not None:
+                            with rate_limit_state["rate_limit_lock"]:
+                                now_time = time.time()
+                                last_rl = rate_limit_state.get("last_rate_limit_time", 0.0)
+                                cooldown_period = rate_limit_state.get("cooldown_period", 30.0)
+                                if now_time - last_rl >= cooldown_period:
+                                    old_delay = rate_limit_state.get("delay", 1.5)
+                                    new_delay = old_delay + 0.1
+                                    print(
+                                        f"Rate limit hit! Dynamically scaling query delay from {old_delay:.2f}s to {new_delay:.2f}s.",
+                                        file=sys.stderr,
+                                        flush=True
+                                    )
+                                    rate_limit_state["delay"] = new_delay
+                                    rate_limit_state["last_rate_limit_time"] = now_time
+
+                        if retries < max_retries:
+                            retries += 1
+                            retry_wait = rate_limit_state.get("cooldown_period", 30.0) if rate_limit_state else 30.0
+                            print(
+                                f"Rate limited checking '{domain}'. Waiting {retry_wait:.1f}s before retry {retries}/{max_retries}...",
+                                file=sys.stderr,
+                                flush=True
+                            )
+                            time.sleep(retry_wait)
+                            continue
+                        else:
+                            return "Rate Limited", "WHOIS registry rate-limited requests"
+                    return status, detail
                 return "Available", "Unregistered (404 Not Found)"
             elif e.code == 403:
                 failed_url = getattr(e, "filename", "") or ""
